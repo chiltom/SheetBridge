@@ -31,9 +31,10 @@ func NewService(repo repositories.Repository) Service {
 }
 
 // ParseCSV parses a CSV file and returns its column types and data for review
+// It reads up to maxRows for the data preview. Use maxRows = -1 to read all rows.
 func (s *service) ParseCSV(r io.Reader, maxRows int) (models.CSVData, error) {
 	reader := csv.NewReader(r)
-	reader.FieldsPerRecord = -1
+	reader.FieldsPerRecord = -1 // Allow variable number of fields per row if necessary
 
 	headers, err := reader.Read()
 	if err != nil {
@@ -63,16 +64,25 @@ func (s *service) ParseCSV(r io.Reader, maxRows int) (models.CSVData, error) {
 func (s *service) CommitCSV(ctx context.Context, req models.CommitRequest, r io.Reader) error {
 	data, err := s.ParseCSV(r, -1)
 	if err != nil {
-		return fmt.Errorf("failed to parse CSV: %w", err)
+		return fmt.Errorf("failed to parse CSV for commit: %w", err)
+	}
+
+	// Map inferred types to PostgreSQL types for table creation/validation
+	dbHeaders := make([]models.ColumnInfo, len(data.Headers))
+	for i, header := range data.Headers {
+		dbHeaders[i] = models.ColumnInfo{
+			Name:     header.Name,
+			DataType: mapInferredTypeToPostgres(header.DataType),
+		}
 	}
 
 	switch req.Action {
 	case "create":
-		if err := s.repo.CreateTable(ctx, req.TableName, data.Headers); err != nil {
+		if err := s.repo.CreateTable(ctx, req.TableName, dbHeaders); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
 	case "overwrite", "append":
-		if err := s.repo.ValidateTable(ctx, req.TableName, data.Headers); err != nil {
+		if err := s.repo.ValidateTable(ctx, req.TableName, dbHeaders); err != nil {
 			return fmt.Errorf("table validation failed: %w", err)
 		}
 		if req.Action == "overwrite" {
@@ -99,6 +109,7 @@ func (s *service) GetAllTables(ctx context.Context) ([]string, error) {
 }
 
 // inferDataTypes infers the data types of CSV columns
+// It prioritizes more specific types (INTEGER, FLOAT, BOOLEAN, DATE) over TEXT.
 func inferDataTypes(headers []string, rows [][]string) []models.ColumnInfo {
 	colTypes := make([]models.ColumnInfo, len(headers))
 	for i := range headers {
@@ -106,13 +117,17 @@ func inferDataTypes(headers []string, rows [][]string) []models.ColumnInfo {
 	}
 
 	for _, row := range rows {
+		if len(row) != len(headers) {
+			continue
+		}
 		for i, val := range row {
 			if val == "" {
 				continue
 			}
 			currentType := colTypes[i].DataType
-			if currentType == "TEXT" {
-				if _, err := strconv.Atoi(val); err == nil {
+			switch currentType {
+			case "TEXT":
+				if _, err := strconv.ParseInt(val, 10, 64); err == nil {
 					colTypes[i].DataType = "INTEGER"
 				} else if _, err := strconv.ParseFloat(val, 64); err == nil {
 					colTypes[i].DataType = "FLOAT"
@@ -120,6 +135,26 @@ func inferDataTypes(headers []string, rows [][]string) []models.ColumnInfo {
 					colTypes[i].DataType = "DATE"
 				} else if strings.ToLower(val) == "true" || strings.ToLower(val) == "false" {
 					colTypes[i].DataType = "BOOLEAN"
+				}
+			case "INTEGER":
+				if _, err := strconv.ParseInt(val, 10, 64); err != nil {
+					if _, err := strconv.ParseFloat(val, 64); err == nil {
+						colTypes[i].DataType = "FLOAT"
+					} else {
+						colTypes[i].DataType = "TEXT"
+					}
+				}
+			case "FLOAT":
+				if _, err := strconv.ParseFloat(val, 64); err != nil {
+					colTypes[i].DataType = "TEXT"
+				}
+			case "DATE":
+				if _, err := time.Parse("2006-01-02", val); err != nil {
+					colTypes[i].DataType = "TEXT"
+				}
+			case "BOOLEAN":
+				if strings.ToLower(val) != "true" && strings.ToLower(val) != "false" {
+					colTypes[i].DataType = "TEXT"
 				}
 			}
 		}
@@ -136,4 +171,22 @@ func sanitizeColumnName(name string) string {
 		return "column"
 	}
 	return name
+}
+
+// mapInferredTypeToPostgres maps the inferred data type to a PostgreSQL data type
+func mapInferredTypeToPostgres(inferredType string) string {
+	switch inferredType {
+	case "INTEGER":
+		return "INT" // Use INT for general integers
+	case "FLOAT":
+		return "FLOAT8" // Use FLOAT8 for double precision floating-point numbers
+	case "BOOLEAN":
+		return "BOOLEAN"
+	case "DATE":
+		return "DATE"
+	case "TEXT":
+		return "TEXT"
+	default:
+		return "TEXT"
+	}
 }

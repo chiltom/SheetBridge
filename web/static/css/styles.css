@@ -1,0 +1,134 @@
+body {
+  font-family: "Segoe UI", Arial, sans-serif;
+  background: linear-gradient(135deg, #e0e7ff, #f4f4f9);
+  margin: 0;
+  padding: 20px;
+  color: #333;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  background: #fff;
+  padding: 30px;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+h1 {
+  text-align: center;
+  color: #1a3c87;
+  margin-bottom: 20px;
+}
+
+.drop-zone {
+  border: 3px dashed #3b82f6;
+  padding: 50px;
+  text-align: center;
+  background: #eff6ff;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.drop-zone.dragover {
+  background: #dbeafe;
+  border-color: #1d4ed8;
+  transform: scale(1.02);
+}
+
+.drop-zone p {
+  margin: 0;
+  font-size: 1.2em;
+  color: #4b5563;
+}
+
+.loading {
+  text-align: center;
+  font-size: 1.2em;
+  color: #3b82f6;
+  margin: 20px 0;
+}
+
+.options,
+.preview {
+  margin-top: 30px;
+  padding: 20px;
+  background: #f9fafb;
+  border-radius: 8px;
+}
+
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+select,
+input[type="text"] {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 1em;
+  transition: border-color 0.2s;
+}
+
+select:focus,
+input[type="text"]:focus {
+  border-color: #3b82f6;
+  outline: none;
+}
+
+.btn {
+  display: inline-block;
+  padding: 12px 24px;
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1em;
+  transition:
+    background 0.3s,
+    transform 0.2s;
+}
+
+.btn:hover {
+  background: #1d4ed8;
+  transform: translateY(-2px);
+}
+
+.table-container {
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+th {
+  background: #3b82f6;
+  color: #fff;
+  position: sticky;
+  top: 0;
+}
+
+tbody tr:hover {
+  background: #f1f5f9;
+}

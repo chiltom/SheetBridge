@@ -2,12 +2,15 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/chiltom/SheetBridge/internal/models"
 	"github.com/chiltom/SheetBridge/internal/utils"
 	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
 )
 
 // Repository manages all of the database operations for the application
@@ -33,12 +36,15 @@ func NewRepository(ctx context.Context, cfg utils.DBConfig) (Repository, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
+	// Might want to add db.SetMaxOpenConns and db.SetMaxIdleConns here later
 	return &repository{db: db}, nil
 }
 
 // Close closes the database connection
 func (r *repository) Close() {
-	r.db.Close()
+	if r.db != nil {
+		r.db.Close()
+	}
 }
 
 // GetAllTables retrieves all table names
@@ -48,6 +54,7 @@ func (r *repository) GetAllTables(ctx context.Context) ([]string, error) {
 		SELECT table_name
 		FROM information_schema.tables
 		WHERE table_schema = 'public'
+		ORDER BY table_name
 	`
 
 	err := r.db.SelectContext(ctx, &tables, query)
@@ -57,114 +64,176 @@ func (r *repository) GetAllTables(ctx context.Context) ([]string, error) {
 	return tables, nil
 }
 
-// ValidateTable validates that a table's schema matches a spreadsheet or not
-func (r *repository) ValidateTable(ctx context.Context, tableName string, headers []models.ColumnInfo) error {
-	rows, err := r.db.QueryxContext(ctx, `
+// ValidateTable validates that a table's schema matches the CSV headers
+func (r *repository) ValidateTable(ctx context.Context, tableName string, csvHeaders []models.ColumnInfo) error {
+	dbCols := []struct {
+		ColumnName string `db:"column_name"`
+		DataType   string `db:"data_type"`
+	}{}
+	query := `
 		SELECT column_name, data_type
-	  FROM information_schema.columns
+		FROM information_schema.columns
 		WHERE table_name = $1
-	`, tableName)
+		ORDER BY ordinal_position
+	`
+
+	err := r.db.SelectContext(ctx, &dbCols, query, tableName)
 	if err != nil {
-		return fmt.Errorf("failed to query columns: %w", err)
+		return fmt.Errorf("failed to query columns for table %s: %w", tableName, err)
 	}
-	defer rows.Close()
-
-	tableCols := make(map[string]string)
-	for rows.Next() {
-		var colName, dataType string
-		if err := rows.Scan(&colName, &dataType); err != nil {
-			return fmt.Errorf("failed to scan column: %w", err)
-		}
-		tableCols[colName] = normalizeDataType(dataType)
+	if len(dbCols) == 0 {
+		return fmt.Errorf("table '%s' does not exist or has no columns", tableName)
 	}
 
-	for _, col := range headers {
-		dbType, exists := tableCols[col.Name]
+	dbColMap := make(map[string]string)
+	for _, col := range dbCols {
+		dbColMap[col.ColumnName] = col.DataType
+	}
+
+	for _, csvCol := range csvHeaders {
+		dbType, exists := dbColMap[csvCol.Name]
 		if !exists {
-			return fmt.Errorf("column %s not found in table %s", col.Name, tableName)
+			return fmt.Errorf("column '%s' from CSV not found in table %s", csvCol.Name, tableName)
 		}
-		if !isCompatibleType(col.DataType, dbType) {
-			return fmt.Errorf("type mismatch for column %s: CSV %s, DB %s", col.Name, col.DataType, dbType)
+
+		csvType := csvCol.DataType
+		if !isPostgresTypeCompatible(csvType, dbType) {
+			return fmt.Errorf("type mismatch for column '%s': CSV type '%s' is not compatible with DB type '%s' in table '%s'",
+				csvCol.Name, csvType, dbType, tableName)
 		}
 	}
+
+	if len(csvHeaders) != len(dbCols) {
+		return fmt.Errorf("column count mismatch: CSV has %d columns, table '%s' has %d columns",
+			len(csvHeaders), tableName, len(dbCols))
+	}
+
 	return nil
+}
+
+// isPostgresTypeCompatible checks if a CSV-inferred PostgreSQL type is compatible with db
+func isPostgresTypeCompatible(csvPgType, dbPgType string) bool {
+	dbPgType = strings.ToLower(dbPgType)
+	csvPgType = strings.ToLower(csvPgType)
+
+	if csvPgType == dbPgType {
+		return true
+	}
+
+	switch csvPgType {
+	case "int":
+		if dbPgType == "bigint" || dbPgType == "numeric" || dbPgType == "float8" {
+			return true
+		}
+	case "float8":
+		if dbPgType == "numeric" || dbPgType == "double precision" {
+			return true
+		}
+	case "date":
+		if dbPgType == "timestamp" || dbPgType == "timestamp without time zone" {
+			return true
+		}
+	case "text":
+		if strings.HasPrefix(dbPgType, "varchar") || dbPgType == "text" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // CreateTable creates a new table in the database
 func (r *repository) CreateTable(ctx context.Context, tableName string, headers []models.ColumnInfo) error {
+	if tableName == "" {
+		return errors.New("table name cannot be empty")
+	}
+
+	tableName = strings.ReplaceAll(tableName, `"`, "")
+
 	var cols []string
 	for _, col := range headers {
-		cols = append(cols, fmt.Sprintf("%s %s", col.Name, col.DataType))
+		colName := strings.ReplaceAll(col.Name, `"`, "")
+		cols = append(cols, fmt.Sprintf(`"%s" %s`, colName, col.DataType))
 	}
-	query := fmt.Sprintf("CREATE TABLE %s (%s)", tableName, strings.Join(cols, ", "))
+
+	query := fmt.Sprintf(`CREATE TABLE "public"."%s" (%s)`, tableName, strings.Join(cols, ", "))
 	_, err := r.db.ExecContext(ctx, query)
 	if err != nil {
-		return fmt.Errorf("failed to create table: %w", err)
+		return fmt.Errorf("failed to create table '%s': %w", tableName, err)
 	}
 	return nil
 }
 
 // TruncateTable removes all of the rows from a database table
 func (r *repository) TruncateTable(ctx context.Context, tableName string) error {
-	_, err := r.db.ExecContext(ctx, fmt.Sprintf("TRUNCATE TABLE %s", tableName))
-	if err != nil {
+	if tableName == "" {
+		return errors.New("table name cannot be empty")
+	}
+
+	tableName = strings.ReplaceAll(tableName, `"`, "")
+	query := fmt.Sprintf(`TRUNCATE TABLE "public"."%s"`, tableName)
+
+	if _, err := r.db.ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("failed to truncate table: %w", err)
 	}
 	return nil
 }
 
 // InsertData inserts rows into a database table
+// This is a row-by-row insert, which can be slow for large datasets
+// For better performance with large files, consider using COPY FROM
 func (r *repository) InsertData(ctx context.Context, tableName string, headers []string, rows [][]string) error {
+	if tableName == "" {
+		return errors.New("table name cannot be empty")
+	}
+	tableName = strings.ReplaceAll(tableName, `"`, "")
+
+	if len(headers) == 0 || len(rows) == 0 {
+		return nil
+	}
+
 	var placeholders []string
 	for i := 1; i <= len(headers); i++ {
 		placeholders = append(placeholders, fmt.Sprintf("$%d", i))
 	}
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
-		tableName, strings.Join(headers, ", "), strings.Join(placeholders, ", "))
+	sanitizedHeaders := make([]string, len(headers))
+	for i, h := range headers {
+		sanitizedHeaders[i] = fmt.Sprintf(`"%s"`, strings.ReplaceAll(h, `"`, ""))
+	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	query := fmt.Sprintf(`INSERT INTO "public"."%s" (%s) VALUES (%s)`,
+		tableName, strings.Join(sanitizedHeaders, ", "), strings.Join(placeholders, ", "))
+
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	for _, row := range rows {
-		args := make([]interface{}, len(row))
-		for i, val := range row {
-			args[i] = val
+	stmt, err := tx.PreparexContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to prepare insert statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for i, row := range rows {
+		if len(row) != len(headers) {
+			log.Printf("Skipping row %d due to incorrect number of fields (expected %d, got %d)",
+				i+1, len(headers), len(row))
+			continue
 		}
-		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-			return fmt.Errorf("failed to insert row: %w", err)
+
+		args := make([]interface{}, len(row))
+		for j, val := range row {
+			args[j] = val
+		}
+		if _, err := stmt.ExecContext(ctx, args...); err != nil {
+			log.Printf("Failed to insert row %d (%v): %v", i+1, row, err)
+			return fmt.Errorf("failed to insert row %d: %w", i+1, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	return nil
-}
-
-// normalizeDataType returns a generalized value from different postgres data types for comparison
-func normalizeDataType(pgType string) string {
-	switch strings.ToLower(pgType) {
-	case "integer", "bigint":
-		return "INTEGER"
-	case "real", "double precision":
-		return "FLOAT"
-	case "boolean":
-		return "BOOLEAN"
-	case "date", "timestamp", "timestamp without time zone":
-		return "DATE"
-	default:
-		return "TEXT"
-	}
-}
-
-func isCompatibleType(csvType, dbType string) bool {
-	if csvType == dbType {
-		return true
-	}
-	if csvType == "INTEGER" && dbType == "FLOAT" {
-		return true
-	}
-	return false
 }

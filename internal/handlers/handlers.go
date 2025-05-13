@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 
@@ -17,11 +18,18 @@ type Server struct {
 	cfg    utils.Config
 	svc    services.Service
 	server *http.Server
+	tmpl   *template.Template
 }
 
 // NewServer returns a new Server
 func NewServer(cfg utils.Config, svc services.Service) *Server {
 	mux := http.NewServeMux()
+
+	tmpl, err := template.ParseFiles("web/templates/index.html")
+	if err != nil {
+		log.Fatalf("Error parsing index.html template: %v", err)
+	}
+
 	srv := &Server{
 		cfg: cfg,
 		svc: svc,
@@ -29,11 +37,16 @@ func NewServer(cfg utils.Config, svc services.Service) *Server {
 			Addr:    cfg.Server.Port,
 			Handler: mux,
 		},
+		tmpl: tmpl,
 	}
+
+	staticFileServer := http.StripPrefix("/static/", http.FileServer(http.Dir("web/static")))
+	mux.Handle("/static/", staticFileServer)
+
+	mux.HandleFunc("/", srv.handleIndex)
 
 	mux.HandleFunc("/upload", srv.handleUpload)
 	mux.HandleFunc("/commit", srv.handleCommit)
-	mux.Handle("/", http.FileServer(http.Dir("web")))
 
 	return srv
 }
@@ -48,6 +61,17 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("server failed: %w", err)
 	}
 	return nil
+}
+
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.tmpl.Execute(w, nil); err != nil {
+		log.Printf("Error executing index.html template: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
 }
 
 // handleUpload handles CSV upload and preview

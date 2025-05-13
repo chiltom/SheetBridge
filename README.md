@@ -1,8 +1,9 @@
 # CSV Ingestion Tool
 
-A Go-based web application for ingesting CSV files into a Postgres database with a modern, drag-and-drop frontend.
+A lightweight, Go-based web application for ingesting CSV files into a Postgres database with a modern, drag-and-drop frontend.
 
 ## Features
+
 - Drag-and-drop CSV upload.
 - Automatic data type inference (INTEGER, FLOAT, BOOLEAN, DATE, TEXT).
 - Select existing Postgres tables for overwrite/append or create new tables.
@@ -10,18 +11,22 @@ A Go-based web application for ingesting CSV files into a Postgres database with
 - Polished, responsive UI with animations.
 
 ## Requirements
+
 - Go 1.21+
 - Postgres
 - Dependencies: `lib/pq`, `sqlx`, `godotenv`, `migrate`
 
 ## Setup
+
 1. **Clone the repository**:
+
    ```bash
-   git clone https://github.com/yourusername/project.git
+   git clone https://github.com/chiltom/SheetBridge.git
    cd project
    ```
 
-2. **Vendored dependencies** (for air-gapped):
+2. **Vendored dependencies** (for configuration replication):
+
    - Copy `vendor/` with:
      - `github.com/jmoiron/sqlx@v1.3.5`
      - `github.com/lib/pq@v1.10.9`
@@ -29,6 +34,7 @@ A Go-based web application for ingesting CSV files into a Postgres database with
      - `github.com/golang-migrate/migrate/v4@v4.17.0`
 
 3. **Configure environment**:
+
    - Copy `.env.example` to `.env` and update with Postgres credentials:
      ```env
      DB_HOST=localhost
@@ -40,17 +46,19 @@ A Go-based web application for ingesting CSV files into a Postgres database with
      ```
 
 4. **Apply migrations**:
+
    ```bash
-   migrate -path migrations -database "postgres://user:password@localhost:5432/spreadsheet_db?sslmode=disable" up
+   migrate -path migrations -database "postgres://spreadsheet_user:spreadsheet_password@localhost:5432/spreadsheet_db?sslmode=disable" up
    ```
 
 5. **Run the application**:
    ```bash
-   go run cmd/server/main.go
+   make run
    ```
    - Access at `http://localhost:8080`.
 
 ## Project Structure
+
 ```
 ├── cmd
 │   └── server
@@ -77,4 +85,6 @@ A Go-based web application for ingesting CSV files into a Postgres database with
 ```
 
 ## License
+
 MIT License. See [LICENSE](LICENSE) for details.
+

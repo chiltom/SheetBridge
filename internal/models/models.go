@@ -1,25 +1,43 @@
 package models
 
-// ColumnInfo represents the schema information of a spreadsheet
-type ColumnInfo struct {
-	Name     string `json:"name"`
-	DataType string `json:"dataType"`
+type CommitAction string
+
+const (
+	create    CommitAction = "create"
+	overwrite CommitAction = "overwrite"
+	append    CommitAction = "append"
+)
+
+// ColumnDefinition describes a column in a table
+type ColumnDefinition struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
-// CSVData represents the individual data for each spreadsheet
-type CSVData struct {
-	Headers []ColumnInfo `json:"headers"`
-	Rows    [][]string   `json:"rows"`
+// CSVPreview holds data for the preview page
+type CSVPreview struct {
+	OriginalFilename string     `json:"originalFilename"`
+	TempFilePath     string     `json:"tempFilePath"`
+	Headers          []string   `json:"headers"`
+	PreviewRows      [][]string `json:"previewRows"`
+	ExistingTables   []string   `json:"existingTables"`
+	SuggestedTable   string     `json:"suggestedTable"`
 }
 
-// UploadResponse represents the response for a spreadsheet upload
-type UploadResponse struct {
-	CSVData
-	TableNames []string `json:"tableNames"`
-}
-
-// CommitRequest represents an upload commit request and its operation
+// CommitRequest is what's sent from the preview page to commit
 type CommitRequest struct {
-	TableName string `json:"tableName"`
-	Action    string `json:"action"` // "overwrite", "append", "create"
+	TempFilePath     string       `form:"tempFilePath"`
+	TableName        string       `form:"tableName"`
+	Action           CommitAction `form:"action"`
+	ColumnNames      []string     `form:"columnNames"`
+	ColumnTypes      []string     `form:"columnTypes"`
+	OriginalFilename string       `form:"originalFilename"`
+}
+
+// TemplateData is the base data structure for HTML templates
+type TemplateData struct {
+	Form    any    // To hold form data and errors (e.g., CommitRequest)
+	Flash   string // Success/error messages
+	Preview *CSVPreview
+	// Add other common fields like CSRFToken string
 }

@@ -1,0 +1,44 @@
+{{template "base" .}} {{define "title"}}Upload CSV - SheetBridge{{end}} {{define
+"main"}}
+<div class="hero min-h-[60vh] bg-base-100 rounded-box shadow-xl">
+  <div class="hero-content text-center">
+    <div class="max-w-md">
+      <h1 class="text-5xl font-bold">Upload Your CSV</h1>
+      <p class="py-6">
+        Drag and drop your CSV file or click to select. We'll help you through
+        the process.
+      </p>
+
+      <form
+        action="/upload"
+        method="POST"
+        enctype="multipart/form-data"
+        class="space-y-4"
+      >
+        <input
+          type="file"
+          name="csvfile"
+          required
+          class="file-input file-input-bordered file-input-primary w-full max-w-xs"
+          accept=".csv"
+        />
+        <button type="submit" class="btn btn-primary">Upload & Preview</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{{if .Preview.ExistingTables}}
+<div class="mt-8 p-6 bg-base-100 rounded-box shadow-xl">
+  <h2 class="text-2xl font-semibold mb-4">Existing Tables in Public Schema</h2>
+  {{if gt (len .Preview.ExistingTables) 0}}
+  <ul class="list-disc list-inside columns-2 md:columns-3 lg:columns-4">
+    {{range .Preview.ExistingTables}}
+    <li class="truncate" title="{{.}}">{{.}}</li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p>No tables found in the public schema.</p>
+  {{end}}
+</div>
+{{end}} {{end}}

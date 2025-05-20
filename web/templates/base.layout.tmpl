@@ -1,0 +1,50 @@
+{{define "base"}}
+<!doctype html>
+<html lang="en" data-theme="cupcake">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{block "title" .}}SheetBridge{{end}}</title>
+    {{/* Option 1: CDN (recommended for simplicity without a build step) /*}}
+    <link
+      href="https://cdn.jsdelivr.net/npm/daisyui@latest/dist/full.css"
+      rel="stylesheet"
+      type="text/css"
+    />
+    <script src="https://cdn.tailwindcss.com"></script>
+    {{/* This includes JIT for development */}}
+    <script>
+      tailwind.config = {
+        content: ["./web/templates/**/*.tmpl"],
+        theme: { extend: {} },
+        plugins: [require("daisyui")],
+      };
+    </script>
+    {{/* Option 2: Local files (if you download/build them)
+    <link href="/static/css/style.css" rel="stylesheet" />
+    <script src="/static/js/main.js" defer></script>
+    */}} {{block "head" .}}{{end}}
+  </head>
+  <body class="min-h-screen bg-base-200 font-sans">
+    <div class="container mx-auto p-4 md:p-6 lg:p-8">
+      <header class="navbar bg-base-100 rounded-box shadow-lg mb-6">
+        <div class="flex-1">
+          <a href="/" class="btn btn-ghost normal-case text-xl">SheetBridge</a>
+        </div>
+      </header>
+
+      {{with .Flash}} {{template "flash" .}} {{end}}
+
+      <main>{{block "main" .}} {{end}}</main>
+
+      <footer
+        class="footer footer-center p-4 bg-base-300 text-base-content rounded-box shadow-lg mt-10"
+      >
+        <div>
+          <p>Copyright © {{template "currentYear" .}} - SheetBridge</p>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>
+{{end}}

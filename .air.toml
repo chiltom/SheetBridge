@@ -1,0 +1,27 @@
+# Configuration for Air live-reloader
+root = "." # Project root directory
+tmp_dir = "tmp" # Directory for temporary files, like the compiled binary
+
+[build]
+  # Command to build application
+  cmd = "go build -o ./tmp/main ./cmd/server"
+  # Path to the compiled binary, relative to root
+  bin = "./tmp/main"
+  # Comand to run the compiled binary
+  full_bin = "./tmp/main" # APP_ENV=dev can be set here if not relying on .env for Air runs
+
+  include_ext = ["go", "tmpl", "html", "css", "js", "env"] # Watch .env for changes as well
+  exclude_dir = ["tmp", "bin", "vendor", "migrations"] # Exclude vendor and migrations
+  include_dir = []
+
+  delay = 1000 # 1 second
+  stop_on_error = true
+  send_interrupt = true # For graceful shutdown
+  kill_delay = 500 # 0.5 seconds
+  log = "air_build_errors.log"
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true

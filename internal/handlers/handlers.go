@@ -1,153 +1,264 @@
 package handlers
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"html/template"
-	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 
+	"github.com/chiltom/SheetBridge/internal/apperrors"
+	"github.com/chiltom/SheetBridge/internal/logger"
 	"github.com/chiltom/SheetBridge/internal/models"
+	"github.com/chiltom/SheetBridge/internal/repositories"
 	"github.com/chiltom/SheetBridge/internal/services"
-	"github.com/chiltom/SheetBridge/internal/utils"
+	// No direct import of main package types like application or render helpers
 )
 
-// Server represents the server that will handle requests and responses
-type Server struct {
-	cfg    utils.Config
-	svc    services.Service
-	server *http.Server
-	tmpl   *template.Template
+const MaxUploadSize = 20 << 20 // 20 MB
+
+// Renderer defines an interface for rendering templates
+// This decouples handlers from the specific rendering implementation in main
+type Renderer interface {
+	Render(w http.ResponseWriter, r *http.Request, status int, page string, data *models.TemplateData)
+	ServerError(w http.ResponseWriter, r *http.Request, err error)
+	ClientError(w http.ResponseWriter, r *http.Request, status int, message string)
+	NotFound(w http.ResponseWriter, r *http.Request)
+	MethodNotAllowed(w http.ResponseWriter, r *http.Request, allowedMethods ...string)
+	NewTemplateData(r *http.Request) *models.TemplateData
 }
 
-// sendJSONError writes a JSON error response
-func sendJSONError(w http.ResponseWriter, message string, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]string{"error": message})
+// AppHandlers holds the necessary internal packages to implement application handlers
+type AppHandlers struct {
+	logger     *logger.Logger
+	csvService *services.CSVService
+	repo       *repositories.DBRepository
+	renderer   Renderer
 }
 
-// sendJSONSuccess writes a JSON success response
-func sendJSONSuccess(w http.ResponseWriter, data interface{}, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// NewServer returns a new Server
-func NewServer(cfg utils.Config, svc services.Service) *Server {
-	mux := http.NewServeMux()
-	tmpl, err := template.ParseFiles("web/templates/index.html")
-	if err != nil {
-		log.Fatalf("Error parsing index.html template: %v", err)
+// NewAppHandlers creates a new application handler struct
+func NewAppHandlers(l *logger.Logger, csv *services.CSVService, r *repositories.DBRepository, renderer Renderer) *AppHandlers {
+	return &AppHandlers{
+		logger:     l,
+		csvService: csv,
+		repo:       r,
+		renderer:   renderer,
 	}
-
-	srv := &Server{
-		cfg: cfg,
-		svc: svc,
-		server: &http.Server{
-			Addr:    cfg.Server.Port,
-			Handler: mux,
-		},
-		tmpl: tmpl,
-	}
-
-	staticFileServer := http.StripPrefix("/static/", http.FileServer(http.Dir("web/static")))
-	mux.Handle("/static/", staticFileServer)
-	mux.HandleFunc("/", srv.handleIndex)
-	mux.HandleFunc("/upload", srv.handleUpload)
-	mux.HandleFunc("/commit", srv.handleCommit)
-	return srv
 }
 
-// Run runs the server and gracefully handles errors when they arise
-func (s *Server) Run(ctx context.Context) error {
-	/* NOTE: The server is currently served without TLS certificates. To implement
-	this, you must provide the TLS certificate file and key file location and
-	use the server.ListenAndServeTLS method */
-	log.Printf("Starting server on %s", s.cfg.Server.Port)
-	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("server failed: %w", err)
+// Home handles rendering the home page
+func (h *AppHandlers) Home(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		h.renderer.NotFound(w, r)
+		return
 	}
-	return nil
-}
-
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		sendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		h.renderer.MethodNotAllowed(w, r, http.MethodGet)
 		return
 	}
-	tableNames, err := s.svc.GetAllTables(r.Context())
+
+	flash := r.URL.Query().Get("flash")
+	ctx := r.Context()
+
+	existingTables, err := h.repo.GetTableNames(ctx)
 	if err != nil {
-		log.Printf("Error fetching table names for index: %v", err)
-		tableNames = []string{} // Default to empty list on error
+		h.logger.Error(err) // Log, but page can still render
 	}
-	pageData := struct{ TableNames []string }{TableNames: tableNames}
-	if err := s.tmpl.Execute(w, pageData); err != nil {
-		log.Printf("Error executing index.html template: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-	}
+
+	data := h.renderer.NewTemplateData(r)
+	data.Flash = flash
+	data.Preview = &models.CSVPreview{ExistingTables: existingTables}
+
+	h.renderer.Render(w, r, http.StatusOK, "home.page.tmpl", data)
 }
 
-// handleUpload handles CSV upload and preview
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+// UploadCSV handles rendering the preview page and initiating CSV parsing
+func (h *AppHandlers) UploadCSV(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		sendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		h.renderer.MethodNotAllowed(w, r, http.MethodPost)
 		return
 	}
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		sendJSONError(w, "Error parsing form: "+err.Error(), http.StatusBadRequest)
+	ctx := r.Context()
+
+	r.Body = http.MaxBytesReader(w, r.Body, MaxUploadSize)
+	if err := r.ParseMultipartForm(MaxUploadSize); err != nil {
+		if strings.Contains(err.Error(), "request body too large") {
+			h.renderer.ClientError(w, r, http.StatusRequestEntityTooLarge, "File exceeds maximum allowed size of 20MB.")
+			return
+		}
+		h.renderer.ClientError(w, r, http.StatusBadRequest, "Error parsing multipart form.")
 		return
 	}
-	file, _, err := r.FormFile("csvfile")
+
+	file, handler, err := r.FormFile("csvfile")
 	if err != nil {
-		sendJSONError(w, "Error retrieving file: "+err.Error(), http.StatusBadRequest)
+		h.logger.Errorf("Error getting form file 'csvfile': %v", err)
+		redirectWithFlash(w, r, "/", "Error: Could not read uploaded file. Please try again.", true)
 		return
 	}
 	defer file.Close()
 
-	data, err := s.svc.ParseCSVForPreview(file, 50)
-	if err != nil {
-		sendJSONError(w, fmt.Sprintf("Error parsing CSV for preview: %v", err), http.StatusBadRequest)
-		return
-	}
-	tableNames, err := s.svc.GetAllTables(r.Context())
-	if err != nil {
-		sendJSONError(w, "Error fetching table names: "+err.Error(), http.StatusInternalServerError)
+	if !strings.HasSuffix(strings.ToLower(handler.Filename), ".csv") {
+		redirectWithFlash(w, r, "/", "Error: Invalid file type. Please upload a .csv file.", true)
 		return
 	}
 
-	response := models.UploadResponse{CSVData: data, TableNames: tableNames}
-	sendJSONSuccess(w, response, http.StatusOK)
+	headers, previewRows, tempFilePath, appErr := h.csvService.ParseUploadedCSV(handler)
+	if appErr != nil {
+		h.logger.Error(appErr)
+		if tempFilePath != "" {
+			os.Remove(tempFilePath)
+		}
+		redirectWithFlash(w, r, "/", fmt.Sprintf("Error parsing CSV: %s", appErr.Message), true)
+		return
+	}
+
+	suggestedTableName := h.csvService.SanitizeTableName(handler.Filename)
+	existingTables, dbAppErr := h.repo.GetTableNames(ctx)
+	if dbAppErr != nil {
+		h.logger.Error(dbAppErr)
+	}
+
+	data := h.renderer.NewTemplateData(r)
+	data.Preview = &models.CSVPreview{
+		OriginalFilename: handler.Filename,
+		TempFilePath:     tempFilePath,
+		Headers:          headers,
+		PreviewRows:      previewRows,
+		SuggestedTable:   suggestedTableName,
+		ExistingTables:   existingTables,
+	}
+	data.Form = &models.CommitRequest{TableName: suggestedTableName, Action: "create"}
+	h.renderer.Render(w, r, http.StatusOK, "preview.page.tmpl", data)
 }
 
-// handleCommit handles data commital requests
-func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
+// CommitCSV handles committing the parsed spreadsheet
+func (h *AppHandlers) CommitCSV(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		sendJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		h.renderer.MethodNotAllowed(w, r, http.MethodPost)
 		return
 	}
-	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB limit
-		sendJSONError(w, "Error parsing form: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	var req models.CommitRequest
-	commitDataJSON := r.FormValue("commitData")
-	if err := json.Unmarshal([]byte(commitDataJSON), &req); err != nil {
-		http.Error(w, "Error decoding commit data: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	fileHeader, _, err := r.FormFile("csvfile")
-	if err != nil {
-		sendJSONError(w, "Error retrieving CSV file for commit: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	defer fileHeader.Close()
+	ctx := r.Context()
 
-	if err := s.svc.CommitCSV(r.Context(), req, fileHeader); err != nil {
-		sendJSONError(w, fmt.Sprintf("Error committing CSV: %v", err), http.StatusInternalServerError)
+	if err := r.ParseForm(); err != nil {
+		h.renderer.ClientError(w, r, http.StatusBadRequest, "Error parsing form data.")
 		return
 	}
-	sendJSONSuccess(w, map[string]string{"message": "Data committed successfully"}, http.StatusOK)
+
+	req := models.CommitRequest{
+		TempFilePath:     r.PostFormValue("tempFilePath"),
+		TableName:        h.csvService.SanitizeTableName(r.PostFormValue("tableName")),
+		Action:           models.CommitAction(r.PostFormValue("action")),
+		ColumnNames:      r.Form["columnNames"],
+		ColumnTypes:      r.Form["columnTypes"],
+		OriginalFilename: r.PostFormValue("originalFilename"),
+	}
+
+	if req.TableName == "" || req.TempFilePath == "" || len(req.ColumnNames) == 0 || len(req.ColumnNames) != len(req.ColumnTypes) {
+		h.logger.Errorf("Commit validation failed: %+v", req)
+		redirectWithFlash(w, r, "/", "Error: Invalid commit data. Missing fields or mismatched columns/types.", true)
+		return
+	}
+	defer os.Remove(req.TempFilePath)
+
+	columnDefs := make([]models.ColumnDefinition, len(req.ColumnNames))
+	for i, rawColName := range req.ColumnNames {
+		sanitizedColName := h.csvService.SanitizeSQLName(rawColName)
+		if sanitizedColName == "" || sanitizedColName == "unnamed_identifier" || sanitizedColName == "sanitized_empty_identifier" {
+			sanitizedColName = fmt.Sprintf("column_%d", i+1)
+		}
+		columnDefs[i] = models.ColumnDefinition{Name: sanitizedColName, Type: req.ColumnTypes[i]}
+	}
+
+	_, allRecords, appErr := h.csvService.ReadFullCSV(req.TempFilePath)
+	if appErr != nil {
+		h.logger.Error(appErr)
+		redirectWithFlash(w, r, "/", fmt.Sprintf("Error reading full CSV data: %s", appErr.Message), true)
+		return
+	}
+
+	tx, err := h.repo.Beginx()
+	if err != nil {
+		h.renderer.ServerError(w, r, apperrors.Wrap(err, apperrors.ErrDatabase, "failed to begin transaction"))
+		return
+	}
+	// Defer rollback. If Commit() is called, this is a no-op.
+	defer func() {
+		if p := recover(); p != nil {
+			tx.Rollback()
+			panic(p)
+		} else if err != nil { // Check if 'err' was set by operations below
+			tx.Rollback()
+		}
+	}()
+
+	tableExists, appErr := h.repo.TableExists(ctx, req.TableName)
+	if appErr != nil {
+		err = appErr // Set outer err for rollback
+		h.renderer.ServerError(w, r, appErr)
+		return
+	}
+
+	flashMessage := ""
+	var operationErr *apperrors.AppError
+
+	if tableExists {
+		switch req.Action {
+		case "overwrite":
+			if operationErr = h.repo.DropTable(ctx, tx, req.TableName); operationErr == nil {
+				operationErr = h.repo.CreateTable(ctx, tx, req.TableName, columnDefs)
+			}
+			if operationErr == nil {
+				flashMessage = fmt.Sprintf("Success: Table '%s' overwritten.", req.TableName)
+			}
+		case "append":
+			flashMessage = fmt.Sprintf("Success: Data appended to table '%s'.", req.TableName)
+		case "create":
+			operationErr = apperrors.Wrap(nil, apperrors.ErrDataConflict, fmt.Sprintf("Table '%s' already exists. Choose 'Overwrite' or 'Append'.", req.TableName))
+		default:
+			operationErr = apperrors.New("invalid_action", "Invalid action specified.")
+		}
+	} else { // Table does not exist
+		if req.Action == "append" {
+			operationErr = apperrors.Wrap(nil, apperrors.ErrDataConflict, fmt.Sprintf("Cannot append. Table '%s' does not exist. Choose 'Create'.", req.TableName))
+		} else { // create or overwrite (implies create due to table not existing already)
+			operationErr = h.repo.CreateTable(ctx, tx, req.TableName, columnDefs)
+			if operationErr == nil {
+				flashMessage = fmt.Sprintf("Success: Table '%s' created.", req.TableName)
+			}
+		}
+	}
+
+	if operationErr != nil {
+		err = operationErr // Set outer err for rollback
+		if apperrors.Is(operationErr, apperrors.ErrDataConflict) || operationErr.Code == "invalid_action" {
+			redirectWithFlash(w, r, "/", "Error: "+operationErr.Message, true)
+		} else {
+			h.renderer.ServerError(w, r, operationErr)
+		}
+		return
+	}
+
+	if operationErr = h.repo.InsertData(ctx, tx, req.TableName, columnDefs, allRecords); operationErr != nil {
+		err = operationErr // Set outer err for rollback
+		h.logger.Error(operationErr)
+		detailedMsg := fmt.Sprintf("Error inserting data into '%s': %s", req.TableName, operationErr.Message)
+		redirectWithFlash(w, r, "/", detailedMsg, true)
+		return
+	}
+
+	if err = tx.Commit(); err != nil { // This is the final commit error
+		h.renderer.ServerError(w, r, apperrors.Wrap(err, apperrors.ErrDatabase, "failed to commit transaction"))
+		return
+	}
+
+	redirectWithFlash(w, r, "/", flashMessage, false)
+}
+
+// redirectWithFlash is a helper (not part of AppHandlers)
+func redirectWithFlash(w http.ResponseWriter, r *http.Request, path, message string, isError bool) {
+	if isError && !strings.HasPrefix(strings.ToLower(message), "error: ") {
+		message = "Error: " + message
+	}
+	http.Redirect(w, r, path+"?flash="+url.QueryEscape(message), http.StatusSeeOther)
 }

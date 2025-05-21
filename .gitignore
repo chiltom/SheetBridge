@@ -1,2 +1,7 @@
 .env
 /bin
+/tmp
+
+# Tailwind CLI and Daisy UI
+/tailwindcss
+/web/static/js/vendor/daisy-ui

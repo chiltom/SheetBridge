@@ -1,0 +1,15 @@
+@import "tailwindcss" source(none);
+@source "../../templates/*.{html,tmpl}";
+@plugin "../js/vendor/daisy-ui/daisyui.js";
+
+/* Optional for custom themes */
+@plugin "../js/vendor/daisy-ui/daisyui-theme.js" {
+  /* custom theme here */
+}
+
+/* Here is where custom global CSS styles can go as well */
+/* For example:
+* body {
+*   font-family: 'Inter', sans-serif; // Assuming you import Inter font
+* }
+*/

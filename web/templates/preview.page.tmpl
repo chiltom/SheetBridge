@@ -1,0 +1,164 @@
+{{template "base" .}} 
+
+{{define "title"}}Preview & Configure - SheetBridge{{end}}
+
+{{define "main"}}
+<div class="p-4 md:p-6 bg-base-100 rounded-box shadow-xl">
+  <h1 class="text-3xl font-bold mb-6">
+    Preview & Configure:
+    <span class="font-mono text-2xl">{{.Preview.OriginalFilename}}</span>
+  </h1>
+
+  <form action="/commit" method="POST" class="space-y-6">
+    <input
+      type="hidden"
+      name="tempFilePath"
+      value="{{.Preview.TempFilePath}}"
+    />
+    <input
+      type="hidden"
+      name="originalFilename"
+      value="{{.Preview.OriginalFilename}}"
+    />
+
+    {{/* Table Name and Action */}}
+    <div class="card bg-base-200 shadow">
+      <div class="card-body">
+        <h2 class="card-title">Table Setup</h2>
+        <div class="form-control w-full max-w-md">
+          <label class="label" for="tableName">
+            <span class="label-text">Table Name (will be sanitized, lowercase, max 63 chars)</span>
+          </label>
+          <input 
+            type="text"
+            id="tableName"
+            name="tableName"
+            placeholder="e.g., my_sales_data"
+            value="{{if .Form.TableName}}{{.Form.TableName}}{{else}}{{.Preview.SuggestedTable}}{{end}}"
+            class="input input-bordered w-full"
+            required
+          />
+        </div>
+
+        <div class="form-control mt-4">
+          <span class="label-text mb-2">Action:</span>
+          <div class="join">
+            <input
+              class="join-item btn btn-sm"
+              type="radio"
+              name="action"
+              value="create"
+              aria-label="Create New"
+              {{if or (eq .Form.Action "create") (not .Form.Action)}}checked{{end}}
+            />
+            <input
+              class="join-item btn btn-sm"
+              type="radio"
+              name="action"
+              value="overwrite"
+              aria-label="Overwrite Existing"
+              {{if (eq .Form.Action "overwrite")}}checked{{end}}
+            />
+            <input
+              class="join-item btn btn-sm"
+              type="radio"
+              name="action"
+              value="append"
+              aria-label="Append to Existing"
+              {{if (eq .Form.Action "append")}}checked{{end}}
+            />
+          </div>
+          <p class="text-xs text-base-content/70 mt-1">
+            'Create' if table doesn't exist. 'Overwrite' drops and recreates. 'Append' adds to existing (schema must match).
+          </p>
+        </div>
+      </div>
+    </div>
+
+    {{/* Column Configuration */}}
+    <div class="card bg-base-200 shadow">
+      <div class="card-body">
+        <h2 class="card-title">Column Configuration</h2>
+        <p class="mb-4 text-sm">
+          Review and adjust column names (will be sanitized) and data types for database storage.
+        </p>
+        <div class="overflow-x-auto">
+          <table class="table table-zebra w-full table-sm">
+            <thead>
+              <tr>
+                <th>CSV Header</th>
+                <th>DB Column Name (Editable)</th>
+                <th>PostgreSQL Data Type</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range $index, $header := .Preview.Headers}}
+              <tr>
+                <td class="font-mono text-xs py-1 px-2">{{$header}}</td>
+                <td class="py-1 px-2">
+                  <input
+                    type="text"
+                    name="columnNames"
+                    value="{{$header}}"
+                    class="input input-sm input-bordered w-full font-mono text-xs"
+                    required
+                  />
+                </td>
+                <td class="py-1 px-2">
+                  <select name="columnTypes" class="select select-sm select-bordered w-full">
+                    <option value="TEXT" selected>TEXT</option>
+                    <option value="INTEGER">INTEGER</option>
+                    <option value="BIGINT">BIGINT</option>
+                    <option value="NUMERIC">NUMERIC (Decimal)</option>
+                    <option value="REAL">REAL (Floating Point)</option>
+                    <option value="DATE">DATE (YYYY-MM-DD)</option>
+                    <option value="TIMESTAMP">TIMESTAMP</option>
+                    <option value="BOOLEAN">BOOLEAN (true/false, 1/0)</option>
+                  </select>
+                </td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    {{/* Data Preview */}}
+    <div class="card bg-base-200 shadow">
+      <div class="card-body">
+        <h2 class="card-title">Data Preview (First {{len .Preview.PreviewRows}} Rows)</h2>
+        {{if .Preview.PreviewRows}}
+        <div class="overflow-x-auto max-h-96">
+          <table class="table table-compact table-zebra w-full table-sm">
+            <thead>
+              <tr>
+                {{range .Preview.Headers}}
+                <th class="font-mono text-xs py-1 px-2">{{.}}</th>
+                {{end}}
+              </tr>
+            </thead>
+            <tbody>
+              {{range .Preview.PreviewRows}}
+              <tr>
+                {{range .}}
+                <td class="font-mono text-xs py-1 px-2 max-w-xs truncate" title="{{.}}">{{.}}</td>
+                {{end}}
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+        {{else}}
+        <p>No data rows to preview (or file was empty after headers).</p>
+        {{end}}
+      </div>
+    </div>
+
+    <div class="text-center mt-8 space-x-4">
+      <a href="/" class="btn btn-ghost">Cancel</a>
+      <button type="submit" class="btn btn-primary btn-lg">Commit to Database</button>
+    </div>
+  </form>
+</div>
+{{end}}

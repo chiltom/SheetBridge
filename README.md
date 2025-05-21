@@ -21,13 +21,13 @@ SheetBridge is a web-based tool built with Go that allows users to easily upload
 ## Screenshots
 
 **1. Home Page / Upload Interface:**
-`![Home Page](landing-page.png)`
+`![Home Page](./docs/landing-page.png)`
 
 **2. Preview & Configuration Page:**
-`![Preview Page](preview-screenshot.png)`
+`![Preview Page](./docs/preview-screenshot.png)`
 
 **3. Success/Error Flash Messages:**
-`![Flash Message](successful-upload.png)`
+`![Flash Message](./docs/successful-upload.png)`
 
 ---
 

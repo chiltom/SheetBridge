@@ -255,6 +255,15 @@ func (h *AppHandlers) CommitCSV(w http.ResponseWriter, r *http.Request) {
 	redirectWithFlash(w, r, "/", flashMessage, false)
 }
 
+// HealthCheckHandler provides a route for services to check the state of the server
+func (h *AppHandlers) HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.renderer.MethodNotAllowed(w, r, http.MethodGet)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // redirectWithFlash is a helper (not part of AppHandlers)
 func redirectWithFlash(w http.ResponseWriter, r *http.Request, path, message string, isError bool) {
 	if isError && !strings.HasPrefix(strings.ToLower(message), "error: ") {

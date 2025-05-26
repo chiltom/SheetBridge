@@ -25,6 +25,7 @@ func (app *application) routes() (http.Handler, error) {
 	mux.HandleFunc("/", app.handlers.Home)
 	mux.HandleFunc("/upload", app.handlers.UploadCSV)
 	mux.HandleFunc("/commit", app.handlers.CommitCSV)
+	mux.HandleFunc("/healthz", app.handlers.HealthCheckHandler)
 
 	var chain http.Handler = mux
 	chain = app.logRequest(chain)

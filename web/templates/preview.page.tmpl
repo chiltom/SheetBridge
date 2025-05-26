@@ -49,7 +49,11 @@
               name="action"
               value="create"
               aria-label="Create New"
-              {{if or (eq .Form.Action "create") (not .Form.Action)}}checked{{end}}
+              {{if not .Preview.TableExists}}
+              checked
+              {{else}}
+              disabled title="Table already exists"
+              {{end}}
             />
             <input
               class="join-item btn btn-sm"
@@ -57,7 +61,14 @@
               name="action"
               value="overwrite"
               aria-label="Overwrite Existing"
-              {{if (eq .Form.Action "overwrite")}}checked{{end}}
+              {{if and .Preview.TableExists (eq .Form.Action "overwrite")}}
+              checked
+              {{else if and .Preview.TableExists (not .Form.Action)}}
+              checked
+              {{end}}
+              {{if not .Preview.TableExists}}
+              disabled title="Table does not exist yet"
+              {{end}}
             />
             <input
               class="join-item btn btn-sm"
@@ -65,7 +76,12 @@
               name="action"
               value="append"
               aria-label="Append to Existing"
-              {{if (eq .Form.Action "append")}}checked{{end}}
+              {{if and .Preview.TableExists (eq .Form.Action "append")}}
+              checked
+              {{end}}
+              {{if not .Preview.TableExists}}
+              disabled title="Table does not exist yet"
+              {{end}}
             />
           </div>
           <p class="text-xs text-base-content/70 mt-1">
@@ -80,41 +96,70 @@
       <div class="card-body">
         <h2 class="card-title">Column Configuration</h2>
         <p class="mb-4 text-sm">
-          Review and adjust column names (will be sanitized) and data types for database storage.
+          {{if .Preview.TableExists}}
+            Schema for existing table '{{.Preview.SuggestedTable}}'. Column names and types are fixed for Overwrite/Append.
+          {{else}}
+            Define column names (default from CSV headers, editable) and data types for the new table.
+          {{end}}
         </p>
         <div class="overflow-x-auto">
           <table class="table table-zebra w-full table-sm">
             <thead>
               <tr>
                 <th>CSV Header</th>
-                <th>DB Column Name (Editable)</th>
-                <th>PostgreSQL Data Type</th>
+                <th>DB Column Name {{if .Preview.TableExists}}(Fixed){{else}}(Editable){{end}}</th>
+                <th>PostgreSQL Data Type {{if .Preview.TableExists}}(Fixed){{end}}</th>
               </tr>
             </thead>
             <tbody>
-              {{range $index, $header := .Preview.Headers}}
+              {{$columnsToDisplay := .Preview.InferredColumnDefs}}
+              {{if .Preview.TableExists}}
+                {{$columnsToDisplay = .Preview.ActualColumnDefs}}
+              {{end}}
+
+              {{range $index, $columnDef := $columnsToDisplay}}
+              {{$csvHeader := ""}}
+              {{$tableExists := false}}
+              {{if lt $index (len $.Preview.Headers)}}
+                {{$csvHeader = index $.Preview.Headers $index}}
+              {{else if .Preview.TableExists}}
+                {{$csvHeader = $columnDef.Name}}
+                {{$tableExists = true}}
+              {{end}}
+
               <tr>
-                <td class="font-mono text-xs py-1 px-2">{{$header}}</td>
+                <td class="font-mono text-xs py-1 px-2">{{$csvHeader}}</td>
                 <td class="py-1 px-2">
                   <input
                     type="text"
                     name="columnNames"
-                    value="{{$header}}"
-                    class="input input-sm input-bordered w-full font-mono text-xs"
+                    value="{{if $tableExists}}{{$columnDef.Name}}{{else}}{{$csvHeader}}{{end}}"
+                    class="input input-sm input-bordered w-full font-mono text-xs {{if $tableExists}}bg-base-300{{end}}"
                     required
+                    {{if $tableExists}}
+                    readonly title="Column name fixed for existing table"
+                    {{end}}
                   />
                 </td>
                 <td class="py-1 px-2">
-                  <select name="columnTypes" class="select select-sm select-bordered w-full">
-                    <option value="TEXT" selected>TEXT</option>
-                    <option value="INTEGER">INTEGER</option>
-                    <option value="BIGINT">BIGINT</option>
-                    <option value="NUMERIC">NUMERIC (Decimal)</option>
-                    <option value="REAL">REAL (Floating Point)</option>
-                    <option value="DATE">DATE (YYYY-MM-DD)</option>
-                    <option value="TIMESTAMP">TIMESTAMP</option>
-                    <option value="BOOLEAN">BOOLEAN (true/false, 1/0)</option>
+                  <select 
+                    name="columnTypes" 
+                    class="select select-sm select-bordered w-full {{if $tableExists}}bg-base-300{{end}}"
+                    {{if $tableExists}}disabled title="Data type fixed for existing table"{{end}}
+                  >
+                    {{$currentType := $columnDef.Type}}
+                    <option value="TEXT" {{if eq $currentType "TEXT"}}selected{{end}}>TEXT</option>
+                    <option value="INTEGER" {{if eq $currentType "INTEGER"}}selected{{end}}>INTEGER</option>
+                    <option value="BIGINT" {{if eq $currentType "BIGINT"}}selected{{end}}>BIGINT</option>
+                    <option value="NUMERIC" {{if eq $currentType "NUMERIC"}}selected{{end}}>NUMERIC (Decimal)</option>
+                    <option value="REAL" {{if eq $currentType "REAL"}}selected{{end}}>REAL (Floating Point)</option>
+                    <option value="DATE" {{if eq $currentType "DATE"}}selected{{end}}>DATE (YYYY-MM-DD)</option>
+                    <option value="TIMESTAMP" {{if eq $currentType "TIMESTAMP"}}selected{{end}}>TIMESTAMP</option>
+                    <option value="BOOLEAN" {{if eq $currentType "BOOLEAN"}}selected{{end}}>BOOLEAN (true/false, 1/0)</option>
                   </select>
+                  {{if $tableExists}}
+                    <input type="hidden" name="columnTypes" value="{{$columnDef.Type}}" />
+                  {{end}}
                 </td>
               </tr>
               {{end}}

@@ -103,6 +103,73 @@ func mapToPostgresType(userType string) string {
 	}
 }
 
+// mapToAppType maps similar datatypes from Postgres to their application equivalent
+func mapToAppType(pgType string) string {
+	pgType = strings.ToLower(strings.TrimSpace(pgType))
+
+	switch {
+	case pgType == "integer" || pgType == "smallint" || pgType == "serial" || pgType == "smallserial":
+		return "INTEGER"
+	case pgType == "bigint" || pgType == "bigserial":
+		return "BIGINT"
+	case pgType == "numeric" || pgType == "decimal":
+		return "NUMERIC"
+	case pgType == "real" || pgType == "double precision":
+		return "REAL"
+	case pgType == "boolean":
+		return "BOOLEAN"
+	case pgType == "date":
+		return "DATE"
+	case strings.HasPrefix(pgType, "timestamp"): // "timestamp without time zone", "timestamp with time zone"
+		return "TIMESTAMP"
+	case pgType == "text":
+		return "TEXT"
+	case strings.HasPrefix(pgType, "character varying"): // varchar(n)
+		return "TEXT"
+	case strings.HasPrefix(pgType, "char"): // char(n)
+		return "TEXT"
+	case pgType == "json" || pgType == "jsonb":
+		return "TEXT"
+	case pgType == "uuid":
+		return "TEXT"
+	case pgType == "bytea":
+		return "TEXT"
+	default:
+		return "TEXT"
+	}
+}
+
+// GetTableSchema retrieves the column names and mapped application types for a given table
+func (r *DBRepository) GetTableSchema(ctx context.Context, tableName string) ([]models.ColumnDefinition, *apperrors.AppError) {
+	query := `
+		SELECT
+			column_name,
+			data_type
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = $1
+		ORDER BY ordinal_position;
+	`
+
+	var rawDbColumns []models.ColumnDefinition
+	err := r.db.SelectContext(ctx, &rawDbColumns, query, tableName)
+	if err != nil {
+		return nil, apperrors.Wrap(err, apperrors.ErrDatabase, fmt.Sprintf("failed to query schema for table '%s'", tableName))
+	}
+
+	if len(rawDbColumns) == 0 {
+		return nil, apperrors.Wrap(nil, apperrors.ErrNotFound, fmt.Sprintf("no columns found for table '%s' in public schema, or table does not exist", tableName))
+	}
+
+	appColDefinitions := make([]models.ColumnDefinition, len(rawDbColumns))
+	for i, col := range rawDbColumns {
+		appColDefinitions[i] = models.ColumnDefinition{
+			Name: col.Name,
+			Type: mapToAppType(col.Type),
+		}
+	}
+	return appColDefinitions, nil
+}
+
 // CreateTable creates a new table in the database using either the provided sqlx transaction or the repository database
 func (r *DBRepository) CreateTable(ctx context.Context, tx *sqlx.Tx, tableName string, columns []models.ColumnDefinition) *apperrors.AppError {
 	if len(columns) == 0 {

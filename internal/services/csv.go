@@ -8,9 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chiltom/SheetBridge/internal/apperrors"
+	"github.com/chiltom/SheetBridge/internal/models"
 )
 
 // MaxPreviewSize defines the number of rows to be returned for a preview
@@ -154,4 +157,122 @@ func (s *CSVService) SanitizeTableName(filename string) string {
 		return "imported_table"
 	}
 	return sanitized
+}
+
+func (s *CSVService) InferSchemaFromPreview(headers []string, previewRows [][]string) []models.ColumnDefinition {
+	numCols := len(headers)
+	if numCols == 0 {
+		return []models.ColumnDefinition{}
+	}
+
+	columnDefinitions := make([]models.ColumnDefinition, numCols)
+
+	for colIdx, headerName := range headers {
+		// For each column, try to determine its type by inspecting its values in the previewRows
+		isStillBoolean := true
+		isStillInteger := true
+		isStillReal := true
+		isStillDate := true
+		isStillTimestamp := true
+
+		hasAtLeastOneNonEmptyValueInColumn := false
+
+		for _, row := range previewRows {
+			if colIdx >= len(row) {
+				// This column value is missing for this row, doesn't help inference much
+				// but doesn't necessarily invalidate types unless all are missing.
+				continue
+			}
+			valStr := strings.TrimSpace(row[colIdx])
+
+			if valStr == "" {
+				continue // Empty strings are compatible with any type for inference purposes
+			}
+			hasAtLeastOneNonEmptyValueInColumn = true
+
+			// Check Boolean: "true", "false", "t", "f", "yes", "no", "1", "0"
+			if isStillBoolean {
+				lcVal := strings.ToLower(valStr)
+				if !(lcVal == "true" || lcVal == "false" || lcVal == "t" || lcVal == "f" ||
+					lcVal == "yes" || lcVal == "no" || lcVal == "0" || lcVal == "1") {
+					isStillBoolean = false
+				}
+			}
+
+			// Check Integer (standard int64)
+			if isStillInteger {
+				if _, err := strconv.ParseInt(valStr, 10, 64); err != nil {
+					isStillInteger = false
+				}
+			}
+
+			// Check Real (float64) - this will also parse integers
+			if isStillReal {
+				if _, err := strconv.ParseFloat(valStr, 64); err != nil {
+					isStillReal = false
+				}
+			}
+
+			// Check Timestamp (more specific than Date)
+			// Common formats for inference
+			tsLayouts := []string{
+				time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02T15:04:05Z07:00",
+				"01/02/2006 15:04:05", "1/2/2006 15:04:05", "Jan 2, 2006 3:04:05 PM", "2006-01-02 15:04",
+				"01/02/2006 12:00",
+			}
+			if isStillTimestamp {
+				parsed := false
+				for _, layout := range tsLayouts {
+					if _, err := time.Parse(layout, valStr); err == nil {
+						parsed = true
+						break
+					}
+				}
+				if !parsed {
+					isStillTimestamp = false
+				}
+			}
+
+			// Check Date (less specific than Timestamp)
+			dateLayouts := []string{
+				"2006-01-02", "01/02/2006", "1/2/2006", "2006/01/02", "Jan 2, 2006", "2-Jan-2006",
+			}
+			if isStillDate {
+				parsed := false
+				for _, layout := range dateLayouts {
+					if _, err := time.Parse(layout, valStr); err == nil {
+						parsed = true
+						break
+					}
+				}
+				if !parsed {
+					isStillDate = false
+				}
+			}
+		} // End of row loop for a column
+
+		// Determine final inferred type based on what's still true
+		// Order of preference: BOOLEAN, INTEGER, REAL, TIMESTAMP, DATE, TEXT
+		inferredAppType := "TEXT" // Default if nothing more specific matches or no non-empty values
+		if hasAtLeastOneNonEmptyValueInColumn {
+			if isStillBoolean {
+				inferredAppType = "BOOLEAN"
+			} else if isStillInteger { // If it's an integer, it's also a real number. Prioritize INTEGER.
+				inferredAppType = "INTEGER" // Or BIGINT if you differentiate and isStillBigInt is true
+			} else if isStillReal {
+				inferredAppType = "REAL" // Could be NUMERIC or REAL depending on your app types
+			} else if isStillTimestamp { // Timestamp is more specific than Date
+				inferredAppType = "TIMESTAMP"
+			} else if isStillDate {
+				inferredAppType = "DATE"
+			}
+		}
+
+		columnDefinitions[colIdx] = models.ColumnDefinition{
+			Name: headerName, // Use the original CSV header name
+			Type: inferredAppType,
+		}
+	}
+
+	return columnDefinitions
 }

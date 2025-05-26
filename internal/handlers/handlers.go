@@ -103,7 +103,7 @@ func (h *AppHandlers) UploadCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	headers, previewRows, tempFilePath, appErr := h.csvService.ParseUploadedCSV(handler)
+	csvHeaders, previewRows, tempFilePath, appErr := h.csvService.ParseUploadedCSV(handler)
 	if appErr != nil {
 		h.logger.Error(appErr)
 		if tempFilePath != "" {
@@ -114,21 +114,51 @@ func (h *AppHandlers) UploadCSV(w http.ResponseWriter, r *http.Request) {
 	}
 
 	suggestedTableName := h.csvService.SanitizeTableName(handler.Filename)
-	existingTables, dbAppErr := h.repo.GetTableNames(ctx)
+
+	tableExists, appErrExists := h.repo.TableExists(ctx, suggestedTableName)
+	if appErrExists != nil {
+		h.logger.Error(appErrExists)
+	}
+
+	var inferredDefs []models.ColumnDefinition
+	var actualDefs []models.ColumnDefinition
+
+	if tableExists {
+		var fetchErr *apperrors.AppError
+		actualDefs, fetchErr = h.repo.GetTableSchema(ctx, suggestedTableName)
+		if fetchErr != nil {
+			h.logger.Error(fetchErr)
+			redirectWithFlash(w, r, "/", fmt.Sprintf("Error fetching schema for existing table '%s': %s", suggestedTableName, fetchErr.Message), true)
+			return
+		}
+	} else {
+		inferredDefs = h.csvService.InferSchemaFromPreview(csvHeaders, previewRows)
+	}
+
+	allExistingTables, dbAppErr := h.repo.GetTableNames(ctx)
 	if dbAppErr != nil {
 		h.logger.Error(dbAppErr)
 	}
 
 	data := h.renderer.NewTemplateData(r)
 	data.Preview = &models.CSVPreview{
-		OriginalFilename: handler.Filename,
-		TempFilePath:     tempFilePath,
-		Headers:          headers,
-		PreviewRows:      previewRows,
-		SuggestedTable:   suggestedTableName,
-		ExistingTables:   existingTables,
+		OriginalFilename:   handler.Filename,
+		TempFilePath:       tempFilePath,
+		Headers:            csvHeaders,
+		PreviewRows:        previewRows,
+		SuggestedTable:     suggestedTableName,
+		ExistingTables:     allExistingTables,
+		TableExists:        tableExists,
+		InferredColumnDefs: inferredDefs,
+		ActualColumnDefs:   actualDefs,
 	}
-	data.Form = &models.CommitRequest{TableName: suggestedTableName, Action: "create"}
+
+	defaultAction := "create"
+	if tableExists {
+		defaultAction = "overwrite" // Sensible default for existing tables
+	}
+	data.Form = &models.CommitRequest{TableName: suggestedTableName, Action: models.CommitAction(defaultAction)}
+
 	h.renderer.Render(w, r, http.StatusOK, "preview.page.tmpl", data)
 }
 
@@ -154,20 +184,53 @@ func (h *AppHandlers) CommitCSV(w http.ResponseWriter, r *http.Request) {
 		OriginalFilename: r.PostFormValue("originalFilename"),
 	}
 
-	if req.TableName == "" || req.TempFilePath == "" || len(req.ColumnNames) == 0 || len(req.ColumnNames) != len(req.ColumnTypes) {
+	if req.TableName == "" || req.TempFilePath == "" {
 		h.logger.Errorf("Commit validation failed: %+v", req)
 		redirectWithFlash(w, r, "/", "Error: Invalid commit data. Missing fields or mismatched columns/types.", true)
 		return
 	}
 	defer os.Remove(req.TempFilePath)
 
-	columnDefs := make([]models.ColumnDefinition, len(req.ColumnNames))
-	for i, rawColName := range req.ColumnNames {
-		sanitizedColName := h.csvService.SanitizeSQLName(rawColName)
-		if sanitizedColName == "" || sanitizedColName == "unnamed_identifier" || sanitizedColName == "sanitized_empty_identifier" {
-			sanitizedColName = fmt.Sprintf("column_%d", i+1)
+	var finalColumnDefs []models.ColumnDefinition
+	tableCurrentlyExists, appErrExists := h.repo.TableExists(ctx, req.TableName)
+	if appErrExists != nil {
+		h.logger.Error(appErrExists)
+	}
+
+	if (req.Action == "overwrite" || req.Action == "append") && tableCurrentlyExists {
+		// For overwrite/append, always use the schema from the database
+		dbSchema, appErrSchema := h.repo.GetTableSchema(ctx, req.TableName)
+		if appErrSchema != nil {
+			h.logger.Error(appErrSchema)
+			redirectWithFlash(w, r, "/", fmt.Sprintf("Error: Could not retrieve schema for table '%s' to %s", req.TableName, req.Action), true)
+			return
 		}
-		columnDefs[i] = models.ColumnDefinition{Name: sanitizedColName, Type: req.ColumnTypes[i]}
+		finalColumnDefs = dbSchema
+	} else if req.Action == "create" {
+		if tableCurrentlyExists { // Trying to "create" a table that now exists (e.g., race or user error)
+			redirectWithFlash(w, r, "/", fmt.Sprintf("Error: Table '%s' already exists. Cannot 'Create'. Choose 'Overwrite' or 'Append'.", req.TableName), true)
+			return
+		}
+		if len(req.ColumnNames) == 0 || len(req.ColumnNames) != len(req.ColumnTypes) {
+			redirectWithFlash(w, r, "/", "Error: Column names and types mismatch or missing for create action.", true)
+			return
+		}
+		finalColumnDefs = make([]models.ColumnDefinition, len(req.ColumnNames))
+		for i, rawColName := range req.ColumnNames {
+			sanitizedColName := h.csvService.SanitizeSQLName(rawColName)
+			if sanitizedColName == "" {
+				sanitizedColName = fmt.Sprintf("column_%d", i+1)
+			}
+			finalColumnDefs[i] = models.ColumnDefinition{Name: sanitizedColName, Type: req.ColumnTypes[i]}
+		}
+	} else {
+		// Handle invalid action/state combinations
+		errMsg := fmt.Sprintf("Error: Invalid action '%s' for table '%s'. Table existence: %t.", req.Action, req.TableName, tableCurrentlyExists)
+		if req.Action == "append" && !tableCurrentlyExists {
+			errMsg = fmt.Sprintf("Error: Cannot append to table '%s' because it does not exist. Choose 'Create'.", req.TableName)
+		}
+		redirectWithFlash(w, r, "/", errMsg, true)
+		return
 	}
 
 	_, allRecords, appErr := h.csvService.ReadFullCSV(req.TempFilePath)
@@ -206,7 +269,7 @@ func (h *AppHandlers) CommitCSV(w http.ResponseWriter, r *http.Request) {
 		switch req.Action {
 		case "overwrite":
 			if operationErr = h.repo.DropTable(ctx, tx, req.TableName); operationErr == nil {
-				operationErr = h.repo.CreateTable(ctx, tx, req.TableName, columnDefs)
+				operationErr = h.repo.CreateTable(ctx, tx, req.TableName, finalColumnDefs)
 			}
 			if operationErr == nil {
 				flashMessage = fmt.Sprintf("Success: Table '%s' overwritten.", req.TableName)
@@ -222,7 +285,7 @@ func (h *AppHandlers) CommitCSV(w http.ResponseWriter, r *http.Request) {
 		if req.Action == "append" {
 			operationErr = apperrors.Wrap(nil, apperrors.ErrDataConflict, fmt.Sprintf("Cannot append. Table '%s' does not exist. Choose 'Create'.", req.TableName))
 		} else { // create or overwrite (implies create due to table not existing already)
-			operationErr = h.repo.CreateTable(ctx, tx, req.TableName, columnDefs)
+			operationErr = h.repo.CreateTable(ctx, tx, req.TableName, finalColumnDefs)
 			if operationErr == nil {
 				flashMessage = fmt.Sprintf("Success: Table '%s' created.", req.TableName)
 			}
@@ -239,7 +302,7 @@ func (h *AppHandlers) CommitCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if operationErr = h.repo.InsertData(ctx, tx, req.TableName, columnDefs, allRecords); operationErr != nil {
+	if operationErr = h.repo.InsertData(ctx, tx, req.TableName, finalColumnDefs, allRecords); operationErr != nil {
 		err = operationErr // Set outer err for rollback
 		h.logger.Error(operationErr)
 		detailedMsg := fmt.Sprintf("Error inserting data into '%s': %s", req.TableName, operationErr.Message)

@@ -30,7 +30,7 @@ SheetBridge is a web-based tool built with Go that allows users to easily upload
 **2. Preview & Configuration Page:**
 
 <p align="center">
-    <img src="./docs/preview-screenshot.png" alt="Preview & Configuration Page" width="700px">
+    <img src="./docs/preview-screenshot.png" alt="Preview & Configuration Page" width="500px">
 </p>
 <br/>
 
